@@ -1,28 +1,33 @@
 #!/bin/bash
 
-echo "🚀 Starting PRO VPS Setup..."
+REPO="https://raw.githubusercontent.com/preciousnkamngang47-afk/vps-setup/main"
 
-# Update
+clear
+echo "======================================"
+echo " VPS INSTALLER PRO MENU"
+echo "======================================"
+
+menu() {
+echo ""
+echo "1) Install SSH + TLS (Stunnel)"
+echo "2) Install UDP Base"
+echo "3) Install Domain + SSL"
+echo "4) Update Script"
+echo "5) Exit"
+echo ""
+read -p "Select option: " opt
+
+case $opt in
+
+1)
+echo "Installing SSH + TLS..."
 apt update -y && apt upgrade -y
+apt install -y openssh-server stunnel4 nginx
 
-# Install packages
-apt install -y openssh-server stunnel4 nginx socat
-
-# Enable services
-systemctl enable ssh
-systemctl enable stunnel4
-systemctl enable nginx
-
-# ========================
-# 🔐 STUNNEL (TLS 443)
-# ========================
-echo "🔐 Generating SSL cert..."
 openssl req -new -x509 -days 3650 -nodes \
 -out /etc/stunnel/stunnel.pem \
 -keyout /etc/stunnel/stunnel.pem \
--subj "/C=US/ST=VPN/L=Server/O=VPN/OU=VPN/CN=localhost"
-
-chmod 600 /etc/stunnel/stunnel.pem
+-subj "/CN=localhost"
 
 cat > /etc/stunnel/stunnel.conf <<EOF
 pid = /var/run/stunnel.pid
@@ -31,93 +36,68 @@ cert = /etc/stunnel/stunnel.pem
 [ssh]
 accept = 443
 connect = 127.0.0.1:22
-socket = l:TCP_NODELAY=1
-socket = r:TCP_NODELAY=1
 EOF
 
 sed -i 's/ENABLED=0/ENABLED=1/g' /etc/default/stunnel4
 
-# ========================
-# ⚡ SSH OPTIMIZATION
-# ========================
-echo "⚡ Optimizing SSH..."
-cat >> /etc/ssh/sshd_config <<EOF
+systemctl restart ssh
+systemctl restart stunnel4
 
-Compression yes
-TCPKeepAlive yes
-ClientAliveInterval 30
-ClientAliveCountMax 3
-Ciphers aes128-ctr
-EOF
+echo "Done: SSH over TLS running on port 443"
+;;
 
-# ========================
-# 🚀 UDP SUPPORT (UDPGW)
-# ========================
-echo "📡 Setting up UDP support..."
-# Simple UDP gateway using socat (port 7300 like your app)
+2)
+echo "Installing UDP base..."
+apt install -y socat
+
 nohup socat UDP-LISTEN:7300,fork UDP:8.8.8.8:53 >/dev/null 2>&1 &
 
-# ========================
-# 🌐 OPTIONAL WEBSOCKET (WSS)
-# ========================
-echo "🌐 Configuring Nginx (WSS support)..."
+echo "UDP running on port 7300"
+;;
+
+3)
+echo "Installing Domain + SSL..."
+
+read -p "Enter your domain: " domain
+
+apt install -y certbot python3-certbot-nginx
 
 cat > /etc/nginx/sites-available/default <<EOF
 server {
     listen 80;
-    server_name _;
+    server_name $domain;
 
-    location /ws {
-        proxy_pass http://127.0.0.1:22;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
+    location / {
+        return 200 "OK";
     }
 }
 EOF
 
-# ========================
-# ⚙️ NETWORK OPTIMIZATION
-# ========================
-echo "🚀 Applying network tuning..."
-
-cat >> /etc/sysctl.conf <<EOF
-
-net.ipv4.tcp_fastopen = 3
-net.ipv4.tcp_no_metrics_save = 1
-net.ipv4.tcp_slow_start_after_idle = 0
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-EOF
-
-sysctl -p
-
-# ========================
-# 🔥 FIREWALL
-# ========================
-if command -v ufw >/dev/null 2>&1; then
-    ufw allow 22
-    ufw allow 443
-    ufw allow 7300/udp
-    ufw --force enable
-fi
-
-# ========================
-# 🔄 RESTART SERVICES
-# ========================
-systemctl restart ssh
-systemctl restart stunnel4
 systemctl restart nginx
 
-echo "✅ SETUP COMPLETE!"
-echo "=================================="
-echo "SSH + TLS:"
-echo "Port: 443"
-echo ""
-echo "UDP:"
-echo "Port: 7300"
-echo ""
-echo "WebSocket (optional):"
-echo "Path: /ws"
-echo "=================================="
+certbot --nginx -d $domain --non-interactive --agree-tos -m admin@$domain --redirect
+
+echo "SSL installed for $domain"
+;;
+
+4)
+echo "Updating script..."
+curl -s $REPO/setup-vpn-pro.sh -o setup-vpn-pro.sh
+chmod +x setup-vpn-pro.sh
+echo "Updated successfully!"
+;;
+
+5)
+exit
+;;
+
+*)
+echo "Invalid option"
+;;
+
+esac
+}
+
+while true; do
+menu
+done
