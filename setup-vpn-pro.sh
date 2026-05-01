@@ -147,7 +147,57 @@ EOF
   echo "Server public key:"
   cat /etc/wireguard/server.pub
 }
+install_slowdns() {
 
+echo "=================================="
+echo "🔧 Installing SlowDNS (dnstt)"
+echo "=================================="
+
+# install dependencies
+apt update -y
+apt install -y git wget tar
+
+# install Go 1.22
+rm -rf /usr/local/go
+wget -q https://go.dev/dl/go1.22.5.linux-amd64.tar.gz
+tar -C /usr/local -xzf go1.22.5.linux-amd64.tar.gz
+
+export PATH=/usr/local/go/bin:$PATH
+echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.bashrc
+
+# download dnstt
+cd /root
+rm -rf dnstt
+git clone https://www.bamsoftware.com/git/dnstt.git
+
+cd dnstt/dnstt-server
+
+# build
+/usr/local/go/bin/go build
+
+# generate keys
+./dnstt-server -gen-key -privkey-file server.key -pubkey-file server.pub
+
+PUBKEY=$(cat server.pub)
+
+# start server
+nohup ./dnstt-server -udp :5300 \
+  -privkey-file server.key \
+  myvpn237.duckdns.org 127.0.0.1:22 > /dev/null 2>&1 &
+
+# open port
+ufw allow 5300/udp
+
+echo ""
+echo "=================================="
+echo "✅ SLOWDNS READY"
+echo "=================================="
+echo "NS: myvpn237.duckdns.org"
+echo "PUBKEY: $PUBKEY"
+echo "DNS: 1.1.1.1"
+echo "PORT: 5300 UDP"
+echo "==================================" 
+}
 update_script(){
   log "Updating script..."
   curl -s $REPO/setup-vpn-pro.sh -o setup-vpn-pro.sh
@@ -168,7 +218,6 @@ full_install(){
   verify
   show_info
 }
-
 menu(){
   clear
   echo "======================================"
@@ -177,7 +226,8 @@ menu(){
   echo "1) Full Install (SSH + TLS)"
   echo "2) Install WireGuard (UDP VPN)"
   echo "3) Update Script"
-  echo "4) Exit"
+  echo "4) Install SlowDNS"
+  echo "5) Exit"
   echo ""
   read -p "Choose: " opt
 
@@ -185,7 +235,8 @@ menu(){
     1) full_install ;;
     2) install_wireguard ;;
     3) update_script ;;
-    4) exit ;;
+    4) install_slowdns ;;
+    5) exit ;;
     *) echo "Invalid" ;;
   esac
 }
