@@ -3,7 +3,7 @@ set -e
 
 trap 'echo -e "\n[✘] Error occurred on line $LINENO\n"' ERR
 
-DOMAIN="myvpn237.duckdns.org"
+DOMAIN="sneaky-user.com"
 
 log(){ echo -e "\n[✔] $1\n"; }
 warn(){ echo -e "\n[!] $1\n"; }
