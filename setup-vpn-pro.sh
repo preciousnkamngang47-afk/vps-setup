@@ -277,7 +277,7 @@ EOF
   echo "=================================="
   echo "✅ SLOWDNS READY"
   echo "=================================="
-  echo "NS: sneaky-user.com"
+  echo "NS: myvpn237.duckdns.org"
   echo "PUBKEY: $PUBKEY"
   echo "DNS: 1.1.1.1"
   echo "PORT: 5300 UDP"
