@@ -1,43 +1,22 @@
 #!/bin/bash
 set -e
 
-trap 'echo -e "\n[✘] Error occurred on line $LINENO\n"' ERR
-
-DOMAIN="sneaky-user.com"
+REPO="https://raw.githubusercontent.com/preciousnkamngang47-afk/vps-setup/main"
 
 log(){ echo -e "\n[✔] $1\n"; }
 warn(){ echo -e "\n[!] $1\n"; }
-fail(){ echo -e "\n[✘] $1\n"; exit 1; }
-
-# ==========================================
-# FIX SYSTEM LOCKS
-# ==========================================
+fail(){ echo -e "\n[✘] $1\n"; }
 
 fix_dpkg(){
   killall apt apt-get 2>/dev/null || true
-  rm -f /var/lib/dpkg/lock-frontend
-  rm -f /var/cache/apt/archives/lock
   dpkg --configure -a || true
 }
 
-# ==========================================
-# DETECT NETWORK INTERFACE
-# ==========================================
-
-NIC=$(ip route | grep default | awk '{print $5}' | head -n1)
-
-# ==========================================
-# INSTALL BASE PACKAGES
-# ==========================================
-
 install_base(){
-
-  log "Installing dependencies..."
-
+  log "Updating & installing base packages..."
   fix_dpkg
-
-  apt update -y
-  apt upgrade -y
+  apt update -y || fix_dpkg
+  apt upgrade -y || true
 
   apt install -y \
     openssh-server \
@@ -46,92 +25,68 @@ install_base(){
     curl \
     wget \
     git \
+    tar \
     ufw \
     fail2ban \
-    qrencode \
-    wireguard \
-    net-tools \
-    dnsutils
+    qrencode
 }
 
-# ==========================================
-# STOP CONFLICTS
-# ==========================================
-
 stop_conflicts(){
-  log "Stopping conflicting services..."
   systemctl stop nginx 2>/dev/null || true
   systemctl stop apache2 2>/dev/null || true
 }
 
-# ==========================================
-# SSH CONFIG (SAFE + LOCAL ONLY)
-# ==========================================
-
-setup_ssh(){
-
-  log "Securing SSH..."
-
-  sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
-  sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
-
-  # IMPORTANT: bind SSH locally only (forced through stunnel)
-  echo "ListenAddress 127.0.0.1" >> /etc/ssh/sshd_config
-
-  systemctl restart ssh
-}
-
-# ==========================================
-# STUNNEL SETUP (REAL HTTPS STYLE 443)
-# ==========================================
-
 setup_stunnel(){
-
-  log "Setting up Stunnel (HTTPS port 443)..."
+  log "Configuring Stunnel (443, 8443)..."
 
   mkdir -p /etc/stunnel
 
-  # FIXED CERT GENERATION
   openssl req -new -x509 -days 3650 -nodes \
     -out /etc/stunnel/stunnel.pem \
-    -keyout /etc/stunnel/stunnel.key \
-    -subj "/CN=$DOMAIN"
+    -keyout /etc/stunnel/stunnel.pem \
+    -subj "/CN=localhost"
 
-  chmod 600 /etc/stunnel/stunnel.*
+  chmod 600 /etc/stunnel/stunnel.pem
 
   cat > /etc/stunnel/stunnel.conf <<EOF
 pid = /var/run/stunnel.pid
 cert = /etc/stunnel/stunnel.pem
-key = /etc/stunnel/stunnel.key
 
-sslVersion = TLSv1.2
-options = NO_SSLv2
-options = NO_SSLv3
-options = NO_TLSv1
-options = NO_TLSv1.1
-options = CIPHER_SERVER_PREFERENCE
-options = NO_COMPRESSION
+[ssh-443]
+accept = 443
+connect = 127.0.0.1:22
+
+[ssh-8443]
+accept = 8443
+connect = 127.0.0.1:22
 
 socket = l:TCP_NODELAY=1
 socket = r:TCP_NODELAY=1
-
-[ssh-https]
-accept = 0.0.0.0:443
-connect = 127.0.0.1:22
 EOF
 
-  sed -i 's/ENABLED=0/ENABLED=1/' /etc/default/stunnel4
-
-  systemctl restart stunnel4
-  systemctl enable stunnel4
+  sed -i 's/ENABLED=0/ENABLED=1/g' /etc/default/stunnel4
 }
 
-# ==========================================
-# UDP HELPER
-# ==========================================
+setup_ssh(){
+  log "Configuring SSH..."
 
-setup_udp(){
+  sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+  sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/g' /etc/ssh/sshd_config
 
+  grep -q "ClientAliveInterval" /etc/ssh/sshd_config || \
+    echo "ClientAliveInterval 30" >> /etc/ssh/sshd_config
+
+  grep -q "ClientAliveCountMax" /etc/ssh/sshd_config || \
+    echo "ClientAliveCountMax 3" >> /etc/ssh/sshd_config
+
+  grep -q "TCPKeepAlive" /etc/ssh/sshd_config || \
+    echo "TCPKeepAlive yes" >> /etc/ssh/sshd_config
+
+  grep -q "Ciphers aes128-ctr" /etc/ssh/sshd_config || \
+    echo "Ciphers aes128-ctr" >> /etc/ssh/sshd_config
+}
+
+setup_udp_helper(){
   log "Starting UDP helper..."
 
   pkill socat 2>/dev/null || true
@@ -140,76 +95,88 @@ setup_udp(){
     >/dev/null 2>&1 &
 }
 
-# ==========================================
-# SYSTEM TUNING
-# ==========================================
-
 setup_sysctl(){
+  log "Applying TCP optimization..."
 
-  log "Optimizing TCP..."
+  grep -q "tcp_congestion_control" /etc/sysctl.conf || cat >> /etc/sysctl.conf <<EOF
 
-  cat >> /etc/sysctl.conf <<EOF
-
-net.ipv4.ip_forward = 1
 net.ipv4.tcp_fastopen = 3
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
 net.ipv4.tcp_no_metrics_save = 1
 net.ipv4.tcp_slow_start_after_idle = 0
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
 EOF
 
-  sysctl -p
+  sysctl -p || true
 }
-
-# ==========================================
-# FIREWALL (SAFE ORDER)
-# ==========================================
 
 setup_firewall(){
-
   log "Configuring firewall..."
 
-  ufw allow 22/tcp
-  ufw allow 443/tcp
-  ufw allow 51820/udp
-  ufw allow 7300/udp
+  ufw allow 22/tcp || true
+  ufw allow 443/tcp || true
+  ufw allow 8443/tcp || true
+  ufw allow 7300/udp || true
+  ufw allow 5300/udp || true
 
-  ufw --force enable
+  ufw --force enable || true
 }
-
-# ==========================================
-# FAIL2BAN
-# ==========================================
 
 setup_fail2ban(){
   log "Enabling fail2ban..."
+
   systemctl enable fail2ban
   systemctl restart fail2ban
 }
 
-# ==========================================
-# VERIFY
-# ==========================================
+restart_services(){
+  log "Restarting services..."
 
-verify(){
-
-  log "Checking services..."
-
-  ss -tulnp | grep 443 || fail "Stunnel not running on 443"
-  ss -tulnp | grep 22 || warn "SSH check warning"
+  systemctl restart ssh || fail "SSH failed"
+  systemctl restart stunnel4 || fail "Stunnel failed"
 }
 
-# ==========================================
-# WIREGUARD
-# ==========================================
+verify(){
+  log "Verifying ports..."
+
+  ss -tulnp | grep -E ':443|:8443' || \
+    fail "TLS ports not listening"
+
+  ss -u -lpn | grep ':7300' || \
+    warn "UDP helper not detected"
+
+  ss -u -lpn | grep ':5300' || \
+    warn "SlowDNS not detected"
+}
+
+show_info(){
+  IP=$(curl -4 -s ifconfig.me)
+
+  echo ""
+  echo "======================================"
+  echo "✅ VPS READY"
+  echo "======================================"
+  echo "IP: $IP"
+  echo "TLS PORTS: 443 / 8443"
+  echo "UDP HELPER: 7300"
+  echo "SLOWDNS: 5300"
+  echo "======================================"
+}
+
+# =========================================
+# WireGuard
+# =========================================
 
 install_wireguard(){
 
   log "Installing WireGuard..."
 
+  apt install -y wireguard
+
   umask 077
 
-  wg genkey | tee /etc/wireguard/server.key | wg pubkey > /etc/wireguard/server.pub
+  wg genkey | tee /etc/wireguard/server.key | \
+    wg pubkey > /etc/wireguard/server.pub
 
   cat > /etc/wireguard/wg0.conf <<EOF
 [Interface]
@@ -217,66 +184,171 @@ Address = 10.66.66.1/24
 ListenPort = 51820
 PrivateKey = $(cat /etc/wireguard/server.key)
 
-PostUp = iptables -t nat -A POSTROUTING -o $NIC -j MASQUERADE
-PostDown = iptables -t nat -D POSTROUTING -o $NIC -j MASQUERADE
+PostUp = iptables -t nat -A POSTROUTING -o ens3 -j MASQUERADE
+PostDown = iptables -t nat -D POSTROUTING -o ens3 -j MASQUERADE
 EOF
 
   sysctl -w net.ipv4.ip_forward=1
 
   systemctl enable wg-quick@wg0
   systemctl restart wg-quick@wg0
+
+  ufw allow 51820/udp
+
+  log "WireGuard installed successfully."
+
+  echo ""
+  echo "SERVER PUBLIC KEY:"
+  cat /etc/wireguard/server.pub
+  echo ""
 }
 
-# ==========================================
-# FULL INSTALL
-# ==========================================
+# =========================================
+# SlowDNS
+# =========================================
 
-full_install(){
-  install_base
-  stop_conflicts
-  setup_ssh
-  setup_stunnel
-  setup_udp
-  setup_sysctl
-  setup_firewall
-  setup_fail2ban
-  verify
+install_slowdns(){
 
   echo ""
   echo "=================================="
-  echo "✅ VPS READY"
+  echo "🔧 Installing SlowDNS"
   echo "=================================="
-  echo "TLS PORT: 443 (Stunnel HTTPS mode)"
-  echo "SSH: localhost only"
-  echo "WIREGUARD: 51820 UDP"
-  echo "DOMAIN: $DOMAIN"
+
+  apt update -y
+  apt install -y git wget tar curl
+
+  # remove old Go
+  rm -rf /usr/local/go
+  rm -f go1.22.5.linux-amd64.tar.gz
+
+  # install Go
+  wget -q https://go.dev/dl/go1.22.5.linux-amd64.tar.gz
+
+  tar -C /usr/local -xzf go1.22.5.linux-amd64.tar.gz
+
+  export PATH=/usr/local/go/bin:$PATH
+  hash -r
+
+  echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.bashrc
+
+  # download dnstt
+  cd /root
+
+  rm -rf dnstt
+
+  git clone https://github.com/tladesignz/dnstt.git
+
+  cd /root/dnstt/dnstt-server
+
+  # build
+  /usr/local/go/bin/go build
+
+  # generate keys
+  ./dnstt-server \
+    -gen-key \
+    -privkey-file server.key \
+    -pubkey-file server.pub
+
+  PUBKEY=$(cat server.pub)
+
+  # create service
+  cat > /etc/systemd/system/slowdns.service <<EOF
+[Unit]
+Description=SlowDNS Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/dnstt/dnstt-server
+ExecStart=/root/dnstt/dnstt-server/dnstt-server -udp :5300 -privkey-file /root/dnstt/dnstt-server/server.key myvpn237.duckdns.org 127.0.0.1:22
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable slowdns
+  systemctl restart slowdns
+
+  ufw allow 5300/udp
+
+  echo ""
+  echo "=================================="
+  echo "✅ SLOWDNS READY"
+  echo "=================================="
+  echo "NS: sneaky-user.com"
+  echo "PUBKEY: $PUBKEY"
+  echo "DNS: 1.1.1.1"
+  echo "PORT: 5300 UDP"
   echo "=================================="
 }
 
-# ==========================================
-# MENU
-# ==========================================
+# =========================================
+# Script updater
+# =========================================
+
+update_script(){
+
+  log "Updating script..."
+
+  curl -s $REPO/setup-vpn-pro.sh -o setup-vpn-pro.sh
+
+  chmod +x setup-vpn-pro.sh
+
+  log "Script updated."
+}
+
+# =========================================
+# Full install
+# =========================================
+
+full_install(){
+
+  install_base
+  stop_conflicts
+  setup_stunnel
+  setup_ssh
+  setup_udp_helper
+  setup_sysctl
+  setup_firewall
+  setup_fail2ban
+  restart_services
+  verify
+  show_info
+}
+
+# =========================================
+# Menu
+# =========================================
 
 menu(){
 
   clear
 
-  echo "=================================="
-  echo "   VPS VPN INSTALLER (FIXED)"
-  echo "=================================="
-  echo "1) Full Install"
-  echo "2) WireGuard Only"
-  echo "3) Exit"
-  echo "=================================="
+  echo "======================================"
+  echo " ULTIMATE VPS INSTALLER"
+  echo "======================================"
+  echo "1) Full Install (SSH + TLS)"
+  echo "2) Install WireGuard"
+  echo "3) Install SlowDNS"
+  echo "4) Update Script"
+  echo "5) Exit"
+  echo ""
 
   read -p "Choose: " opt
 
   case $opt in
     1) full_install ;;
     2) install_wireguard ;;
-    3) exit ;;
+    3) install_slowdns ;;
+    4) update_script ;;
+    5) exit ;;
     *) echo "Invalid option" ;;
   esac
+
+  echo ""
+  read -p "Press Enter to continue..."
 }
 
 while true; do
